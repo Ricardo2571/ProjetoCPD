@@ -2,7 +2,8 @@ import socket
 import json
 import threading
 import inspect
-from primos import find_max_prime_parallel, is_prime
+import time
+from primos import find_max_prime_parallel, is_prime, find_max_prime_sequential
 from game_of_life import game_of_life_sequential, game_of_life_parallel
 
 
@@ -11,6 +12,7 @@ class RPCServer:
         self.host, self.port = host, port
         self.running = False
         self.server_socket = None
+
         self.methods = {
             'find_max_prime': self._find_max_prime,
             'is_prime': self._is_prime,
@@ -18,9 +20,15 @@ class RPCServer:
             'list_methods': self._list_methods,
         }
 
-    def _find_max_prime(self, timeout: float, workers: int = 1) -> dict:
-        """Encontra o primo e retorna estatísticas de execução."""
-        p, t_found, t_total = find_max_prime_parallel(timeout, max(1, workers), True)
+    def _find_max_prime(self, timeout: int, workers: int = 1) -> dict:
+        start_t = time.time()
+
+        if workers > 1:
+            p, t_found = find_max_prime_parallel(int(timeout), int(workers))
+        else:
+            p, t_found = find_max_prime_sequential(int(timeout))
+
+        t_total = time.time() - start_t
 
         return {
             "max_prime": p,
@@ -29,21 +37,20 @@ class RPCServer:
         }
 
     def _is_prime(self, n: int) -> bool:
-        return is_prime(n)
+        return is_prime(int(n))
 
     def _game_of_life(self, grid: list, generations: int, workers: int = 1) -> list:
-        if workers > 1: return game_of_life_parallel(grid, generations, workers)
-        return game_of_life_sequential(grid, generations)
+        if workers > 1:
+            return game_of_life_parallel(grid, int(generations), int(workers))
+        return game_of_life_sequential(grid, int(generations))
 
     def _list_methods(self) -> list:
-        """Usa reflexão para listar os métodos disponíveis."""
         lista = []
         for name, func in self.methods.items():
             sig = inspect.signature(func)
-            # Remove 'self' param se existir
             params = [p for p in sig.parameters.keys() if p != 'self']
-            desc = func.__doc__ if func.__doc__ else "Executa operação."
-            lista.append({"nome": name, "parametros": params, "descricao": desc})
+            desc = func.__doc__ if func.__doc__ else "Executa a operacao correspondente."
+            lista.append({"nome": name, "parametros": params, "descricao": desc.strip()})
         return lista
 
     def _handle_request(self, req: dict) -> dict:
@@ -52,14 +59,15 @@ class RPCServer:
             params = req.get('params', {})
 
             if method_name not in self.methods:
-                return {"error": f"Metodo {method_name} inexistente."}
+                return {"error": f"Metodo {method_name} inexistente ou invalido."}
 
             result = self.methods[method_name](**params)
             return {"result": result}
+
         except TypeError as e:
-            return {"error": f"Parametros invalidos: {str(e)}"}
+            return {"error": f"Parametros incorretos para a funcao invocada: {str(e)}"}
         except Exception as e:
-            return {"error": f"Erro interno: {str(e)}"}
+            return {"error": f"Erro interno do servidor: {str(e)}"}
 
     def _handle_client(self, sock: socket.socket, addr: tuple):
         print(f"[+] Cliente conectado: {addr}")
@@ -77,11 +85,11 @@ class RPCServer:
                             req_json = json.loads(req_str)
                             resp_json = self._handle_request(req_json)
                         except json.JSONDecodeError:
-                            resp_json = {"error": "Formato JSON invalido."}
+                            resp_json = {"error": "Formato JSON enviado nao e valido."}
 
                         sock.send((json.dumps(resp_json) + '\n').encode('utf-8'))
         except Exception as e:
-            print(f"[-] Erro cliente {addr}: {e}")
+            print(f"[-] Ocorreu um erro com o cliente {addr}: {e}")
         finally:
             sock.close()
             print(f"[-] Cliente desconectado: {addr}")
@@ -90,31 +98,30 @@ class RPCServer:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(10)  # Permite múltiplos clientes concorrentes
+        self.server_socket.listen(10)
         self.running = True
-        print(f"Servidor RPC a escutar em {self.host}:{self.port}")
+
+        print(f"Servidor RPC ativo na porta TCP {self.port}")
 
         try:
             while self.running:
                 client_sock, client_addr = self.server_socket.accept()
                 threading.Thread(target=self._handle_client, args=(client_sock, client_addr), daemon=True).start()
         except KeyboardInterrupt:
-            print("\nA encerrar servidor...")
+            print("\nA encerrar servidor com seguranca...")
         except OSError:
-            # Ignora o erro gerado quando o socket é fechado pelo método stop()
             pass
         finally:
             self.stop()
 
     def stop(self):
-        """Para o servidor RPC e fecha as ligações."""
         self.running = False
         if self.server_socket:
             try:
                 self.server_socket.close()
             except Exception:
                 pass
-        print("Servidor RPC parado.")
+        print("Servidor desligado.")
 
 
 if __name__ == '__main__':

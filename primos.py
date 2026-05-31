@@ -1,285 +1,412 @@
+"""
+Módulo Primos
+Procura do maior número primo dentro de um limite temporal.
+Versões sequencial e paralela (multiprocessing).
+"""
+
 import gc
 import multiprocessing as mp
 import time as time_module
 
-MODO_EXPLORAR = 0   
-MODO_REFINAR = 1    
-MODO_PERSEGUIR = 2  
+# Constantes para os modos de busca
+MODE_EXPLORE = 0
+MODE_REFINE = 1
+MODE_CHASE = 2
 
-def time():
-  return time_module.time()
 
+# ---------------------------------------------------------------------------
+# Função obrigatória do enunciado
+# ---------------------------------------------------------------------------
 def is_prime(n: int) -> bool:
-  if n < 2: return False
-  if n in (2, 3): return True
-  if n % 2 == 0 or n % 3 == 0: return False
-  divisor = 5
-  while divisor * divisor <= n:
-    if n % divisor == 0 or n % (divisor + 2) == 0:
-      return False
-    divisor += 6
-  return True
+    if n < 2:
+        return False
+    if n in (2, 3):
+        return True
+    if n % 2 == 0 or n % 3 == 0:
+        return False
 
-def _garantir_impar(n: int) -> int:
-  return n if n % 2 != 0 else n + 1
+    divisor = 5
+    while divisor * divisor <= n:
+        if n % divisor == 0 or n % (divisor + 2) == 0:
+            return False
+        divisor += 6
 
-# CORREÇÃO 3: Função para garantir que o STEP é sempre par!
-def _garantir_par(n: int) -> int:
-  return n if n % 2 == 0 else n + 1
+    return True
 
-def _alinhar_acima_do_maximo(global_max: int, candidato: int) -> int:
-  if global_max <= candidato:
-    return candidato
-  return _garantir_impar(global_max + 2)
 
-def _limites_tempo(timeout: float):
-  if timeout <= 5.0: return 16, 4
-  if timeout <= 10.0: return 17, 2
-  return 18, 1
+# ---------------------------------------------------------------------------
+# Funções Matemáticas Auxiliares
+# ---------------------------------------------------------------------------
+def ensure_odd(n: int) -> int:
+    # Garante que o número é ímpar (soma 1 se for par)
+    if n % 2 != 0:
+        return n
+    else:
+        return n + 1
 
-def _atribuir_faixa_worker(worker_id, num_workers, mag_min, mag_count, max_magnitude, range_divisor):
-  # CORREÇÃO 2: Se for 1 worker, atira-o para o Topo (não para a casa dos milhões!)
-  if num_workers == 1:
-      return max_magnitude - 1, True, 1, 0, 0
 
-  tail_hunter = False
-  workers_na_faixa = 1
-  sub_id = 0
-  worker_offset = 0
+def ensure_even(n: int) -> int:
+    # Garante que o número (o salto) é par
+    if n % 2 == 0:
+        return n
+    else:
+        return n + 1
 
-  if num_workers <= mag_count:
-    magnitude = mag_min + min(worker_id, mag_count - 1)
-    divisor = num_workers * range_divisor
-    worker_offset = (10 ** magnitude) // divisor * worker_id
-  elif worker_id < mag_count:
-    magnitude = mag_min + worker_id
-    divisor = mag_count * range_divisor
-    worker_offset = (10 ** magnitude) // divisor * worker_id
-  else:
-    tail_hunter = True
-    overflow = worker_id - mag_count
-    magnitude = max_magnitude - (overflow % 2)
-    workers_na_faixa = num_workers - mag_count
-    sub_id = overflow
 
-  return magnitude, tail_hunter, workers_na_faixa, sub_id, worker_offset
+def align_above_max(global_max: int, candidate: int) -> int:
+    # Ajusta o candidato para saltar acima do maior primo já encontrado
+    if global_max <= candidate:
+        return candidate
+    else:
+        return ensure_odd(global_max + 2)
 
-def _candidato_inicial(magnitude, top_tier, worker_id, sub_id, worker_offset, start_time):
-  base = 10 ** magnitude
-  teto = base * 10
-  salt = int((start_time % 1.0) * 1_000_003)
-  slot = (worker_id + 1) * 1_000_003 + (sub_id + 1) * 2_000_003 + salt
 
-  if top_tier:
-    inicio = base + base // 8
-    fim = base * 4
-    dispersao = (slot % max(1, (fim - inicio) // 2)) * 2
-    candidato = inicio + dispersao + worker_offset + 1
-  else:
-    inicio = base + base // 4
-    largura = (base * 7) // 10
-    dispersao = (slot % max(1, largura // 2)) * 2 + worker_offset
-    candidato = inicio + dispersao + 1
+def get_time_limits(timeout_duration: float) -> tuple:
+    # Define a magnitude máxima da pesquisa com base no tempo disponível
+    if timeout_duration <= 5.0:
+        return 16, 4
+    elif timeout_duration <= 10.0:
+        return 17, 2
+    else:
+        return 18, 1
 
-  if candidato >= teto:
-    candidato = base + worker_offset + 1
 
-  band_lo = inicio if top_tier else 0
-  band_hi = fim if top_tier else teto
-  return _garantir_impar(candidato), base, teto, band_lo, band_hi
+# ---------------------------------------------------------------------------
+# Lógica de Inicialização dos Workers
+# ---------------------------------------------------------------------------
+def assign_worker_range(worker_id, num_workers, min_magnitude, magnitude_count, max_magnitude, range_divisor):
+    # Se houver apenas 1 worker, atira-o para uma magnitude alta mas segura
+    if num_workers == 1:
+        return max_magnitude - 1, True, 1, 0, 0
 
-def _step_inicial(magnitude, timeout_duration, workers_na_faixa):
-  fator_mag = 2 ** max(0, magnitude - 10)
-  fator_tempo = 1.0 + (3.0 / max(timeout_duration, 1.0))
-  fator_workers = 1.0 + (workers_na_faixa / 20.0)
-  step = int(2 * fator_mag * fator_tempo * fator_workers)
-  
-  # CORREÇÃO 3: Step tem de ser PAR
-  step = _garantir_par(step) 
-  if step < 2: step = 2
+    is_top_tier = False
+    workers_in_range = 1
+    sub_id = 0
+    worker_offset = 0
 
-  limite = 5000
-  if timeout_duration <= 5.0:
-    if magnitude >= 14: limite = 600
-    elif magnitude >= 12: limite = 1500
-    elif magnitude >= 10: limite = 3000
-  return min(step, limite)
+    if worker_id < magnitude_count:
+        # Distribui os workers normais pelas diferentes grandezas matemáticas
+        if num_workers <= magnitude_count:
+            magnitude = min_magnitude + min(worker_id, magnitude_count - 1)
+            current_divisor = num_workers
+        else:
+            magnitude = min_magnitude + worker_id
+            current_divisor = magnitude_count
 
-def _worker_busca_primos(worker_id, num_workers, start_time, end_time,
-                         max_value, stop_flag, time_found):
-  gc.disable()
-  local_time = time
-  testar = is_prime
+        worker_offset = (10 ** magnitude) // (current_divisor * range_divisor) * worker_id
+        return magnitude, False, 1, 0, worker_offset
+    else:
+        # Os workers "extra" vão ajudar nas zonas mais altas (top tier)
+        is_top_tier = True
+        overflow = worker_id - magnitude_count
+        magnitude = max_magnitude - (overflow % 2)
+        workers_in_range = num_workers - magnitude_count
+        sub_id = overflow
 
-  duracao = max(end_time - start_time, 1e-9)
-  max_magnitude, range_divisor = _limites_tempo(duracao)
-  mag_min = 6
-  mag_count = max_magnitude - mag_min + 1
+        return magnitude, is_top_tier, workers_in_range, sub_id, 0
 
-  magnitude, tail_hunter, workers_na_faixa, sub_id, worker_offset = _atribuir_faixa_worker(
-    worker_id, num_workers, mag_min, mag_count, max_magnitude, range_divisor,
-  )
-  top_tier = tail_hunter or magnitude >= max_magnitude - 1
 
-  candidato, base, teto, band_lo, band_hi = _candidato_inicial(
-    magnitude, top_tier, worker_id, sub_id, worker_offset, start_time,
-  )
+def calculate_initial_candidate(magnitude, is_top_tier, worker_id, sub_id, offset, start_time):
+    base = 10 ** magnitude
+    ceiling = base * 10
 
-  step = _step_inicial(magnitude, duracao, workers_na_faixa)
-  step_inicial = step
-  potencia_decay = 2.0 if magnitude >= 12 else 1.0
-  modo = MODO_EXPLORAR
+    # Cria uma dispersão aleatória baseada no tempo para os workers não se sobreporem
+    salt = int((start_time % 1.0) * 1_000_003)
+    slot = (worker_id + 1) * 1_000_003 + (sub_id + 1) * 2_000_003 + salt
 
-  progresso_perseguir = 0.38 if top_tier else 0.62
-  progresso_refinar = 0.42 if magnitude >= 14 else 0.34
-  progresso_fino = 0.82
+    if is_top_tier:
+        start_point = base + (base // 8)
+        end_point = base * 4
+        dispersion_limit = max(1, (end_point - start_point) // 2)
+        dispersion = (slot % dispersion_limit) * 2
+        candidate = start_point + dispersion + offset + 1
 
-  max_global = max_value.get_obj()
-  parar = stop_flag.get_obj()
-  tempo_encontrado = time_found.get_obj()
-  lock_max = max_value.get_lock
+        band_low = start_point
+        band_high = end_point
+    else:
+        start_point = base + (base // 4)
+        end_point = ceiling
+        dispersion_limit = max(1, (base * 7) // 20)
+        dispersion = (slot % dispersion_limit) * 2 + offset
+        candidate = start_point + dispersion + 1
 
-  inv_duracao = 1.0 / duracao
-  intervalo_check = max(512 if top_tier else 2048, step)
-  contador_check = intervalo_check
-  contador_sync = 32 if top_tier else 256
+        band_low = 0
+        band_high = ceiling
 
-  while True:
-    if top_tier:
-      contador_sync -= 1
-      if contador_sync <= 0:
-        contador_sync = 32
-        candidato = _alinhar_acima_do_maximo(max_global.value, candidato)
+    # Previne que o candidato inicial fuja dos limites
+    if candidate >= ceiling:
+        candidate = base + offset + 1
 
-    if testar(candidato):
-      agora = local_time()
-      if agora >= end_time:
-        break
-      melhor = max_global.value
-      if candidato > melhor:
-        with lock_max():
-          if candidato > max_global.value:
-            max_global.value = candidato
-            tempo_encontrado.value = agora - start_time
-        if top_tier:
-          modo = MODO_PERSEGUIR
-        elif modo == MODO_EXPLORAR and candidato >= base:
-          modo = MODO_REFINAR
-          step = 2
-          intervalo_check = 2048
+    return ensure_odd(candidate), base, ceiling, band_low, band_high
 
-    candidato += step
-    if candidato >= teto:
-      break
 
-    contador_check -= 1
-    if contador_check > 0:
-      continue
-    contador_check = intervalo_check
+def calculate_initial_step(magnitude, timeout_duration, workers_in_range):
+    # Define o tamanho do salto (step) entre verificações numéricas
+    magnitude_factor = 2 ** max(0, magnitude - 10)
+    time_factor = 1.0 + (3.0 / max(timeout_duration, 1.0))
+    worker_factor = 1.0 + (workers_in_range / 20.0)
 
-    if parar.value: break
-    agora = local_time()
-    if agora >= end_time: break
+    step = int(2 * magnitude_factor * time_factor * worker_factor)
+    step = ensure_even(step)
 
-    melhor = max_global.value
-    if melhor >= teto: break
-    candidato = _alinhar_acima_do_maximo(melhor, candidato)
-
-    progresso = (agora - start_time) * inv_duracao
-    progresso = max(0.0, min(1.0, progresso))
-
-    if top_tier and progresso >= progresso_fino:
-      if melhor >= base:
-        candidato = _alinhar_acima_do_maximo(melhor, candidato)
-        modo = MODO_REFINAR
+    if step < 2:
         step = 2
-        intervalo_check = 256
-        continue
-      if candidato >= band_hi:
-        candidato = _garantir_impar(band_lo)
-        modo = MODO_PERSEGUIR
-        continue
 
-    if top_tier and progresso >= progresso_perseguir:
-      modo = MODO_PERSEGUIR
+    # Limita o tamanho do salto se o tempo for curto
+    step_limit = 5000
+    if timeout_duration <= 5.0:
+        if magnitude >= 14:
+            step_limit = 600
+        elif magnitude >= 12:
+            step_limit = 1500
+        elif magnitude >= 10:
+            step_limit = 3000
 
-    if modo == MODO_PERSEGUIR:
-      candidato = _alinhar_acima_do_maximo(melhor, candidato)
-      espaco = teto - candidato
-      if espaco > 2:
-        tempo_restante = max(0.04, 1.0 - progresso)
-        salto = int(espaco / (4 + 10 * tempo_restante))
-        salto = max(2, min(salto, 200_000))
-        # CORREÇÃO 3: Salto par no modo perseguir
-        step = _garantir_par(salto) 
-        intervalo_check = max(128, step // 4)
-      else:
-        modo = MODO_REFINAR
-        step = 2
-        intervalo_check = 512
-      continue
+    result = min(step, step_limit)
+    return max(2, result)
 
-    if modo == MODO_EXPLORAR and progresso >= progresso_refinar and not top_tier:
-      modo = MODO_REFINAR
-      step = 2
-      intervalo_check = 2048
-      continue
 
-    if modo == MODO_REFINAR:
-      continue
+# ---------------------------------------------------------------------------
+# Worker Paralelo Principal
+# ---------------------------------------------------------------------------
+def worker_find_primes(worker_id, num_workers, start_time, end_time, shared_max, stop_flag, shared_time_found):
+    # Desliga a limpeza de memória automática para ganhar velocidade
+    gc.disable()
 
-    ajustado = max(0.0, (progresso - 0.15) / 0.85)
-    decay = (1.0 - ajustado) ** potencia_decay
-    novo_step = int(step_inicial * decay) + 2
-    novo_step = min(novo_step, step_inicial)
-    
-    # CORREÇÃO 3: Step par no modo explorar
-    step = max(2, _garantir_par(novo_step))
-    intervalo_check = max(2048, step)
+    duration = max(end_time - start_time, 1e-9)
+    max_magnitude, range_divisor = get_time_limits(duration)
 
-def find_max_prime_parallel(timeout: int, workers: int, return_stats: bool = False):
-  max_value = mp.Value('Q', 2)
-  stop_flag = mp.Value('b', False)
-  time_found = mp.Value('d', 0.0)
+    magnitude, is_top_tier, workers_in_range, sub_id, offset = assign_worker_range(
+        worker_id, num_workers, 6, max_magnitude - 5, max_magnitude, range_divisor
+    )
 
-  inicio = time()
-  fim = inicio + float(timeout)
-  args_comuns = (workers, inicio, fim, max_value, stop_flag, time_found)
+    candidate, base, ceiling, band_low, band_high = calculate_initial_candidate(
+        magnitude, is_top_tier, worker_id, sub_id, offset, start_time
+    )
 
-  processos = []
-  for i in range(workers):
-    p = mp.Process(target=_worker_busca_primos, args=(i, *args_comuns), daemon=True)
-    p.start()
-    processos.append(p)
+    step = calculate_initial_step(magnitude, duration, workers_in_range)
+    initial_step = step
 
-  time_module.sleep(float(timeout))
-  stop_flag.value = True
+    if magnitude >= 12:
+        decay_power = 2.0
+    else:
+        decay_power = 1.0
 
-  for p in processos:
-    p.join(timeout=0.1)
-    if p.is_alive():
-      p.terminate()
+    current_mode = MODE_EXPLORE
 
-  if return_stats:
-    return max_value.value, time_found.value, time() - inicio
-  return max_value.value
+    # Progresso do tempo para mudar as estratégias
+    progress_chase = 0.38 if is_top_tier else 0.62
+    progress_refine = 0.42 if magnitude >= 14 else 0.34
+    progress_fine = 0.82
 
-def find_max_prime_sequential(timeout: int) -> int:
-  fim = time() + timeout
-  max_primo = 2
-  candidato = 3
-  a_cada = 4096
-  contador = a_cada
+    # Variáveis partilhadas
+    global_max_obj = shared_max.get_obj()
+    stop_flag_obj = stop_flag.get_obj()
+    time_found_obj = shared_time_found.get_obj()
+    shared_lock = shared_max.get_lock
 
-  while True:
-    contador -= 1
-    if contador == 0:
-      contador = a_cada
-      if time() >= fim:
-        break
+    inverse_duration = 1.0 / duration
 
-    if is_prime(candidato):
-      max_primo = candidato
-    candidato += 2
+    if is_top_tier:
+        check_interval = 512
+    else:
+        check_interval = 2048
 
-  return max_primo
+    check_interval = max(check_interval, step)
+    check_counter = check_interval
+
+    if is_top_tier:
+        sync_counter = 32
+    else:
+        sync_counter = 256
+
+    # O ciclo principal de procura matemática
+    while True:
+        # Sincroniza com o melhor valor de x em x iterações
+        if is_top_tier:
+            sync_counter -= 1
+            if sync_counter <= 0:
+                sync_counter = 32
+                candidate = align_above_max(global_max_obj.value, candidate)
+
+        # Se encontrou um primo...
+        if is_prime(candidate):
+            current_time = time_module.time()
+
+            if current_time >= end_time:
+                break
+
+            best_found = global_max_obj.value
+
+            # Se este primo for o maior de todos até agora...
+            if candidate > best_found:
+                # Tranca a memória (Lock) e atualiza para que todos saibam
+                with shared_lock():
+                    if candidate > shared_max.value:
+                        shared_max.value = candidate
+                        time_found_obj.value = current_time - start_time
+
+                if is_top_tier:
+                    current_mode = MODE_CHASE
+                elif current_mode == MODE_EXPLORE and candidate >= base:
+                    current_mode = MODE_REFINE
+                    step = 2
+                    check_interval = 2048
+
+        # Prepara o próximo número a testar
+        candidate += step
+
+        if candidate >= ceiling:
+            break
+
+        # O relógio só é lido a cada X tentativas para poupar CPU
+        check_counter -= 1
+        if check_counter > 0:
+            continue
+
+        check_counter = check_interval
+        current_time = time_module.time()
+
+        if stop_flag_obj.value or current_time >= end_time:
+            break
+
+        best_found = global_max_obj.value
+
+        if best_found >= ceiling:
+            break
+
+        candidate = align_above_max(best_found, candidate)
+        progress = (current_time - start_time) * inverse_duration
+
+        if progress < 0.0: progress = 0.0
+        if progress > 1.0: progress = 1.0
+
+        # Lógicas de transição consoante o tempo vai acabando
+        if is_top_tier and progress >= progress_fine:
+            if best_found >= base:
+                candidate = align_above_max(best_found, candidate)
+                current_mode = MODE_REFINE
+                step = 2
+                check_interval = 256
+                continue
+
+            if candidate >= band_high:
+                candidate = ensure_odd(band_low)
+                current_mode = MODE_CHASE
+                continue
+
+        if is_top_tier and progress >= progress_chase:
+            current_mode = MODE_CHASE
+
+        if current_mode == MODE_CHASE:
+            candidate = align_above_max(best_found, candidate)
+            space_left = ceiling - candidate
+
+            if space_left > 2:
+                time_left = max(0.04, 1.0 - progress)
+                jump = int(space_left / (4 + 10 * time_left))
+                jump = max(2, min(jump, 200_000))
+
+                step = ensure_even(jump)
+                check_interval = max(128, step // 4)
+            else:
+                current_mode = MODE_REFINE
+                step = 2
+                check_interval = 512
+            continue
+
+        if current_mode == MODE_EXPLORE and progress >= progress_refine and not is_top_tier:
+            current_mode = MODE_REFINE
+            step = 2
+            check_interval = 2048
+            continue
+
+        if current_mode == MODE_REFINE:
+            continue
+
+        # Reduz suavemente o tamanho do salto no modo de exploração
+        adjusted_progress = max(0.0, (progress - 0.15) / 0.85)
+        decay_factor = (1.0 - adjusted_progress) ** decay_power
+
+        new_step = int(initial_step * decay_factor) + 2
+        new_step = min(new_step, initial_step)
+
+        step = max(2, ensure_even(new_step))
+        check_interval = max(2048, step)
+
+
+# ---------------------------------------------------------------------------
+# Funções Principais a Expor para o RPC
+# ---------------------------------------------------------------------------
+def find_max_prime_parallel(timeout: int, workers: int) -> tuple:
+    # Memória partilhada
+    shared_max = mp.Value('Q', 2)
+    stop_flag = mp.Value('b', False)
+    shared_time_found = mp.Value('d', 0.0)
+
+    start_time = time_module.time()
+    end_time = start_time + float(timeout)
+
+    arguments = (workers, start_time, end_time, shared_max, stop_flag, shared_time_found)
+
+    # Cria os processos
+    processes = []
+    for i in range(workers):
+        p = mp.Process(target=worker_find_primes, args=(i, *arguments), daemon=True)
+        processes.append(p)
+
+    # Inicia todos ao mesmo tempo
+    for p in processes:
+        p.start()
+
+    # A thread principal (servidor) descansa até o tempo acabar
+    time_module.sleep(float(timeout))
+
+    # Envia sinal de fecho para todos
+    stop_flag.value = True
+
+    # Aguarda a terminação segura (join) e mata quem demorar (terminate)
+    for p in processes:
+        p.join(timeout=0.1)
+        if p.is_alive():
+            p.terminate()
+
+    return shared_max.value, shared_time_found.value
+
+
+def find_max_prime_sequential(timeout: int) -> tuple:
+    start_time = time_module.time()
+    end_time = start_time + float(timeout)
+
+    max_prime = 2
+    candidate = 3
+
+    # 1. Reduzimos o intervalo para evitar que ele fique preso a fazer matemática
+    # longos segundos depois de o tempo limite já ter acabado.
+    check_interval = 20
+    check_counter = check_interval
+    time_found = 0.0
+
+    while True:
+        check_counter -= 1
+
+        if check_counter == 0:
+            check_counter = check_interval
+
+            if time_module.time() >= end_time:
+                break
+
+        if is_prime(candidate):
+            current_time = time_module.time()
+
+            # 2. Validação super rigorosa: Se encontrou o primo, mas o tempo já
+            # tinha acabado, rejeita o número e sai do ciclo imediatamente!
+            if current_time >= end_time:
+                break
+
+            max_prime = candidate
+            time_found = current_time - start_time
+
+        candidate += 2
+
+    return max_prime, time_found

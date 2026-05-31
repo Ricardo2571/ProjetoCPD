@@ -6,14 +6,14 @@ Implementa o autómato celular de John Conway com abordagens sequencial e parale
 import multiprocessing as mp
 import ctypes
 
-
 def _count_neighbors(grid_1d, r: int, c: int, rows: int, cols: int) -> int:
     """
     Conta o número de vizinhos vivos (1) de uma célula na grelha 1D.
-    Assegura que as fronteiras não são ultrapassadas (grelha não cíclica).
+    Assegura que as fronteiras não são ultrapassadas (fronteira NÃO cíclica,
+    como estritamente definido no enunciado).
     """
     count = 0
-    # Determina as fronteiras de verificação (garante que não sai da grelha)
+    # Limites estritos para garantir o respeito pelas fronteiras físicas da grelha
     r_start = max(0, r - 1)
     r_end = min(rows, r + 2)
     c_start = max(0, c - 1)
@@ -22,13 +22,12 @@ def _count_neighbors(grid_1d, r: int, c: int, rows: int, cols: int) -> int:
     for i in range(r_start, r_end):
         row_offset = i * cols
         for j in range(c_start, c_end):
-            # Ignora a própria célula
+            # Ignora a própria célula central
             if i == r and j == c:
                 continue
             if grid_1d[row_offset + j] == 1:
                 count += 1
     return count
-
 
 def game_of_life_sequential(grid: list, generations: int) -> list:
     """
@@ -44,7 +43,7 @@ def game_of_life_sequential(grid: list, generations: int) -> list:
     rows = len(grid)
     cols = len(grid[0])
 
-    # Achatamos a grelha para uma lista 1D por questões de simplicidade e velocidade
+    # Transformação de matriz 2D numa lista 1D para maximizar a localidade em cache e velocidade
     current_grid = [val for row in grid for val in row]
 
     for _ in range(generations):
@@ -56,17 +55,19 @@ def game_of_life_sequential(grid: list, generations: int) -> list:
                 idx = row_offset + c
                 live_neighbors = _count_neighbors(current_grid, r, c, rows, cols)
 
-                # Regras do Game of Life
+                # Aplicação rigorosa das 4 Regras de Conway
                 if current_grid[idx] == 1:
+                    # Sobrevive
                     if live_neighbors == 2 or live_neighbors == 3:
                         next_grid[idx] = 1
                 else:
+                    # Nasce
                     if live_neighbors == 3:
                         next_grid[idx] = 1
 
         current_grid = next_grid
 
-    # Reconstrói a lista de listas 2D no final
+    # Reconstrói e devolve a matriz no formato original 2D
     final_grid = []
     for r in range(rows):
         start_idx = r * cols
@@ -74,22 +75,24 @@ def game_of_life_sequential(grid: list, generations: int) -> list:
 
     return final_grid
 
-
 def _worker_gol(worker_id: int, num_workers: int, rows: int, cols: int,
                 arr_a, arr_b, generations: int, barrier):
     """
-    Worker que processa uma fatia específica da grelha em paralelo.
-    Utiliza uma Barreira para garantir a sincronização temporal entre gerações.
+    Estratégia de divisão de trabalho e sincronização:
+    Cada worker é responsável exclusivamente por um subconjunto de LINHAS da grelha.
+    A barreira garante sincronização consistente no final de cada geração.
     """
-    # 1. DIVISÃO DO TRABALHO: Divisão horizontal (por linhas)
-    # Cada worker calcula o seu bloco de linhas para evitar Race Conditions.
+    # 1. DIVISÃO HORIZONTAL (Gestão de Concorrência sem Locks)
+    # Como as linhas processadas são estritamente separadas, garantimos a
+    # ausência total de "Race Conditions" na escrita.
     chunk = rows // num_workers
     start_row = worker_id * chunk
-    # O último worker assume o resto das linhas para garantir que nada fica para trás
+    # O último worker absorve as linhas extra em caso de divisão não exata
     end_row = rows if worker_id == num_workers - 1 else (worker_id + 1) * chunk
 
     for gen in range(generations):
-        # Ping-Pong entre as duas memórias partilhadas
+        # Double-Buffering (Ping-Pong): Uma grelha é apenas leitura, a outra apenas escrita.
+        # Alternam a cada geração para atualizar os resultados consistentemente.
         if gen % 2 == 0:
             read_arr, write_arr = arr_a, arr_b
         else:
@@ -100,10 +103,8 @@ def _worker_gol(worker_id: int, num_workers: int, rows: int, cols: int,
             for c in range(cols):
                 idx = row_offset + c
 
-                # Conta vizinhos consultando o array de leitura
                 live_neighbors = _count_neighbors(read_arr, r, c, rows, cols)
 
-                # Aplica as regras e escreve no array de escrita
                 current_state = read_arr[idx]
                 if current_state == 1:
                     if live_neighbors == 2 or live_neighbors == 3:
@@ -116,18 +117,13 @@ def _worker_gol(worker_id: int, num_workers: int, rows: int, cols: int,
                     else:
                         write_arr[idx] = 0
 
-        # 2. SINCRONIZAÇÃO: Todos os workers esperam aqui antes de começarem a próxima geração
+        # 2. COORDENAÇÃO E SINCRONIZAÇÃO ENTRE GERAÇÕES
+        # Nenhum worker pode avançar para a geração n+1 sem que todos terminem a geração n
         barrier.wait()
-
 
 def game_of_life_parallel(grid: list, generations: int, workers: int) -> list:
     """
-    Simula a evolução da grelha recorrendo a múltiplos workers.
-
-    :param grid: Matriz 2D inicial.
-    :param generations: Número de gerações.
-    :param workers: Número de processos em paralelo.
-    :return: Matriz 2D final.
+    Simula a evolução da grelha recorrendo a múltiplos processos trabalhadores.
     """
     if not grid or not grid[0]:
         return grid
@@ -135,43 +131,42 @@ def game_of_life_parallel(grid: list, generations: int, workers: int) -> list:
     rows = len(grid)
     cols = len(grid[0])
 
-    # Se o número de workers exceder o número de linhas, rebaixamos para evitar workers ociosos
+    # Se pedirem mais workers do que linhas, rebaixamos automaticamente
+    # para evitar sobrecarga (overhead) sem benefício associado.
     workers = min(workers, rows)
 
     if workers <= 1:
         return game_of_life_sequential(grid, generations)
 
-    # Criação de memórias partilhadas puras (RawArray). 
-    # Não precisam de Locks porque os workers nunca escrevem nas linhas uns dos outros.
+    # Memórias partilhadas nativas (C-Types)
+    # Utilizadas em vez de Queues ou Pipes para transferência de matrizes grandes
+    # porque anulam o pesado tempo de "pickling" (serialização) do Python.
     arr_a = mp.RawArray(ctypes.c_byte, rows * cols)
     arr_b = mp.RawArray(ctypes.c_byte, rows * cols)
 
-    # Inicialização da primeira grelha
     for r in range(rows):
         for c in range(cols):
             arr_a[r * cols + c] = grid[r][c]
 
-    # Barreira onde 'workers' processos terão de se encontrar no fim de cada geração
+    # Barreira de bloqueio para Múltiplos Workers
     barrier = mp.Barrier(workers)
-    processes = []
+    processos = []
 
-    # Arranque dos workers
     for i in range(workers):
         p = mp.Process(
             target=_worker_gol,
             args=(i, workers, rows, cols, arr_a, arr_b, generations, barrier)
         )
         p.start()
-        processes.append(p)
+        processos.append(p)
 
-    # Esperar que todos terminem a totalidade das gerações
-    for p in processes:
+    # Terminação coordenada de todos os workers (join estrito)
+    for p in processos:
         p.join()
 
-    # O array que contém o resultado final depende do número (par/ímpar) de gerações
+    # Identificar a matriz com o último estado válido
     final_arr = arr_a if generations % 2 == 0 else arr_b
 
-    # Reconstrói a grelha final em formato 2D (Lista de Listas) para retornar ao Servidor
     final_grid = []
     for r in range(rows):
         start_idx = r * cols
