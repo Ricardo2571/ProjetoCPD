@@ -2,10 +2,8 @@ import socket
 import json
 import threading
 import inspect
-import time
 from primos import find_max_prime_parallel, is_prime, find_max_prime_sequential
 from game_of_life import game_of_life_sequential, game_of_life_parallel
-
 
 class RPCServer:
     def __init__(self, host='localhost', port=5000):
@@ -20,15 +18,12 @@ class RPCServer:
             'list_methods': self._list_methods,
         }
 
-    def _find_max_prime(self, timeout: int, workers: int = 1) -> dict:
-        start_t = time.time()
-
+    def _find_max_prime(self, timeout: float, workers: int = 1) -> dict:
+        """Invocação pedindo estatísticas detalhadas ativando o modo secreto."""
         if workers > 1:
-            p, t_found = find_max_prime_parallel(int(timeout), int(workers))
+            p, t_found, t_total = find_max_prime_parallel(int(timeout), workers, return_stats=True)
         else:
-            p, t_found = find_max_prime_sequential(int(timeout))
-
-        t_total = time.time() - start_t
+            p, t_found, t_total = find_max_prime_sequential(int(timeout), return_stats=True)
 
         return {
             "max_prime": p,
@@ -57,15 +52,11 @@ class RPCServer:
         try:
             method_name = req.get('method')
             params = req.get('params', {})
-
             if method_name not in self.methods:
-                return {"error": f"Metodo {method_name} inexistente ou invalido."}
-
-            result = self.methods[method_name](**params)
-            return {"result": result}
-
+                return {"error": f"Metodo {method_name} inexistente."}
+            return {"result": self.methods[method_name](**params)}
         except TypeError as e:
-            return {"error": f"Parametros incorretos para a funcao invocada: {str(e)}"}
+            return {"error": f"Parametros incorretos: {str(e)}"}
         except Exception as e:
             return {"error": f"Erro interno do servidor: {str(e)}"}
 
@@ -82,14 +73,12 @@ class RPCServer:
                     req_str, buffer = buffer.split('\n', 1)
                     if req_str.strip():
                         try:
-                            req_json = json.loads(req_str)
-                            resp_json = self._handle_request(req_json)
+                            resp = self._handle_request(json.loads(req_str))
                         except json.JSONDecodeError:
-                            resp_json = {"error": "Formato JSON enviado nao e valido."}
-
-                        sock.send((json.dumps(resp_json) + '\n').encode('utf-8'))
+                            resp = {"error": "Formato JSON invalido."}
+                        sock.send((json.dumps(resp) + '\n').encode('utf-8'))
         except Exception as e:
-            print(f"[-] Ocorreu um erro com o cliente {addr}: {e}")
+            print(f"[-] Erro com cliente {addr}: {e}")
         finally:
             sock.close()
             print(f"[-] Cliente desconectado: {addr}")
@@ -100,7 +89,6 @@ class RPCServer:
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(10)
         self.running = True
-
         print(f"Servidor RPC ativo na porta TCP {self.port}")
 
         try:
@@ -117,13 +105,9 @@ class RPCServer:
     def stop(self):
         self.running = False
         if self.server_socket:
-            try:
-                self.server_socket.close()
-            except Exception:
-                pass
+            try: self.server_socket.close()
+            except Exception: pass
         print("Servidor desligado.")
 
-
 if __name__ == '__main__':
-    server = RPCServer()
-    server.start()
+    RPCServer().start()

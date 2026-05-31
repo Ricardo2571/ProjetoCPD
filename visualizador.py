@@ -44,7 +44,7 @@ def main():
 
     # Variáveis de Estado
     geracao = 0
-    workers = 4  # Começa com 4 workers por defeito
+    workers = 1  # Começa com 1 workers por defeito
     pausa = True  # Começa pausado para poderes escolher os workers!
     a_correr = True
 
