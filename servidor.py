@@ -2,6 +2,7 @@ import socket
 import json
 import threading
 import inspect
+import time
 from primos import find_max_prime_parallel, is_prime, find_max_prime_sequential
 from game_of_life import game_of_life_sequential, game_of_life_parallel
 
@@ -19,16 +20,17 @@ class RPCServer:
         }
 
     def _find_max_prime(self, timeout: float, workers: int = 1) -> dict:
-        """Invocação pedindo estatísticas detalhadas ativando o modo secreto."""
+        start = time.time()
         if workers > 1:
-            p, t_found, t_total = find_max_prime_parallel(int(timeout), workers, return_stats=True)
+            p, t_found = find_max_prime_parallel(int(timeout), workers)
         else:
-            p, t_found, t_total = find_max_prime_sequential(int(timeout), return_stats=True)
+            p, t_found = find_max_prime_sequential(int(timeout))
 
+        total_time = time.time() - start
         return {
             "max_prime": p,
             "time_found": round(t_found, 4),
-            "total_time": round(t_total, 4)
+            "total_time": round(total_time, 4)
         }
 
     def _is_prime(self, n: int) -> bool:
