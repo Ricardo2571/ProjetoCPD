@@ -1,7 +1,9 @@
-Nome: [Seu Nome]
-Numero: [Numero Aluno]
-Email: [Email]
-
-Nome: [Nome Colega]
-Numero: [Numero Aluno]
-Email: [Email]
+========================================
+Nome: Ricardo Alexandre Capitão Bento  |
+Numero: 2024123746                     |
+Email: 2024123746@estudantes.ips.pt    |
+========================================
+Nome: Ricardo dos Santos Vaz           |
+Numero: 2024150272                     |
+Email: 2024150272@estudantes.ips.pt    |
+========================================

@@ -17,20 +17,27 @@ class RPCClient:
     """
 
     def __init__(self, host: str = 'localhost', port: int = 5000):
+        """
+        Inicializa um descritor de cliente RPC.
+
+        Args:
+            host (str, opcional): Host de destino (default: 'localhost').
+            port (int, opcional): Porta de destino TCP (default: 5000).
+        """
         self.host = host
         self.port = port
 
     def call(self, method: str, params: Dict[str, Any]) -> Optional[Any]:
         """
         Gera a framework de rede, conecta-se, transmite o pedido estruturado
-        e aguarda descodificando a resposta.
+        e aguarda descodificando a resposta com tratamento robusto de falhas.
 
         Args:
             method (str): A string equivalente à função no servidor.
             params (Dict): Dicionário de argumentos da função.
 
         Returns:
-            O valor devolvido pela função do servidor, ou None em caso de erro.
+            Optional[Any]: O valor devolvido pela função do servidor, ou None em caso de erro.
         """
         request = {
             "method": method,
@@ -44,8 +51,13 @@ class RPCClient:
                 response_str = ""
                 while '\n' not in response_str:
                     chunk = sock.recv(4096).decode('utf-8')
-                    if not chunk: break
+                    if not chunk:
+                        break
                     response_str += chunk
+
+                if not response_str.strip():
+                    print("Erro de Comunicacao: O servidor fechou a ligacao inesperadamente.")
+                    return None
 
                 response = json.loads(response_str.strip())
 
@@ -56,20 +68,31 @@ class RPCClient:
                 return response.get("result")
 
         except ConnectionRefusedError:
-            print("Erro de Ligacao: O servidor nao se encontra ativo.")
+            print("Erro de Ligacao: O servidor nao se encontra ativo ou recusou a conexao.")
+            return None
+        except json.JSONDecodeError:
+            print("Erro de Protocolo: A resposta recebida do servidor nao e um JSON valido.")
+            return None
+        except OSError as e:
+            print(f"Erro de Rede intermedio: {e}")
             return None
 
 
 def main() -> None:
-    """Menu principal executado de forma cíclica."""
+    """
+    Menu principal executado de forma cíclica que lida com a entrada de comandos.
+
+    Returns:
+        None
+    """
     client = RPCClient()
 
     while True:
         print("\n--- MENU DE APLICACAO RPC ---")
         print("1. Listar Metodos Disponiveis")
         print("2. Testar Primalidade Individual (is_prime)")
-        print("3. Benchmark Paralelismo: Maior Primo")
-        print("4. Benchmark Paralelismo: Game of Life")
+        print("3. Encontrar Maior Primo")
+        print("4. Game of Life")
         print("5. BONUS: Game of Life (Visualizador Grafico)")
         print("6. Sair")
 
@@ -79,13 +102,17 @@ def main() -> None:
             metodos = client.call("list_methods", {})
             if metodos:
                 for m in metodos:
-                    print(f"- {m['nome']}{tuple(m['parametros'])} -> {m['descricao']}")
+                    # Formata os parâmetros de forma limpa como "funcao(param1, param2)" em vez de tuplos nativos
+                    params_formatados = ", ".join(m['parametros'])
+                    print(f"- {m['nome']}({params_formatados}) -> {m['descricao']}")
 
         elif escolha == '2':
             try:
-                n = int(input("Introduza um numero natural: "))
+                n = input("Introduza um numero natural: ")
+                # Envia o input; a validação estrita do tipo será feita também no servidor
                 res = client.call("is_prime", {"n": n})
-                print(f"O numero {n} e primo? {res}")
+                if res is not None:
+                    print(f"O numero {n} e primo? {res}")
             except ValueError:
                 print("Por favor, insira um numero inteiro valido.")
 

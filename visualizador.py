@@ -43,7 +43,13 @@ def desenhar_grelha(ecra: pygame.Surface, grid: List[List[int]]) -> None:
 
 
 def main() -> None:
-    """Arranque primário da janela Pygame e ciclo de eventos (Event Loop)."""
+    """
+    Arranque primário da janela Pygame e ciclo de eventos (Event Loop).
+    Gere os inputs do utilizador para pausas e chamadas RPC contínuas de renderização.
+
+    Returns:
+        None
+    """
     print("A ligar ao Servidor RPC...")
     cliente = RPCClient(host='localhost', port=5000)
 

@@ -8,6 +8,16 @@ import multiprocessing as mp
 import ctypes
 
 def game_of_life_sequential(grid: list, generations: int) -> list:
+    """
+    Executa a simulação do Jogo da Vida de forma estritamente sequencial.
+
+    Args:
+        grid (list): Matriz bidimensional inicial representando a grelha (1 = vivo, 0 = morto).
+        generations (int): Número de gerações a simular.
+
+    Returns:
+        list: Nova matriz bidimensional representando o estado final após N gerações.
+    """
     if not grid or not grid[0]:
         return grid
 
@@ -48,14 +58,26 @@ def game_of_life_sequential(grid: list, generations: int) -> list:
     return [current_grid[r*cols : (r+1)*cols] for r in range(rows)]
 
 def _worker_gol_otimizado(worker_id: int, num_workers: int, rows: int, cols: int,
-                          arr_a, arr_b, generations: int, barrier):
-    """Worker de execução paralela utilizando chunking horizontal."""
+                          arr_a, arr_b, generations: int, barrier) -> None:
+    """
+    Worker de execução paralela utilizando chunking horizontal para processar blocos da matriz.
+
+    Args:
+        worker_id (int): Identificador único do worker atual.
+        num_workers (int): Número total de workers em execução.
+        rows (int): Número total de linhas da grelha.
+        cols (int): Número total de colunas da grelha.
+        arr_a (RawArray): Matriz partilhada (Buffer A).
+        arr_b (RawArray): Matriz partilhada (Buffer B).
+        generations (int): Número de gerações a calcular.
+        barrier (multiprocessing.Barrier): Mecanismo de sincronização entre processos.
+    """
     chunk = rows // num_workers
     start_row = worker_id * chunk
     end_row = rows if worker_id == num_workers - 1 else (worker_id + 1) * chunk
 
     for gen in range(generations):
-        # Double Buffering (Ping-Pong) para evitar Race Conditions
+        # Double Buffering (Ping-Pong) para evitar Race Conditions nas leituras/escritas
         read_arr, write_arr = (arr_a, arr_b) if gen % 2 == 0 else (arr_b, arr_a)
 
         for r in range(start_row, end_row):
@@ -80,10 +102,21 @@ def _worker_gol_otimizado(worker_id: int, num_workers: int, rows: int, cols: int
                 else:
                     write_arr[idx] = 1 if vizinhos == 3 else 0
 
-        # Barreira restrita: Ninguém avança no tempo sem que o espaço esteja sincronizado
+        # Barreira restrita: Ninguém avança no tempo sem que o espaço (matriz atual) esteja sincronizado
         barrier.wait()
 
 def game_of_life_parallel(grid: list, generations: int, workers: int) -> list:
+    """
+    Despoleta a execução paralela da simulação recorrendo a multiprocessamento e memória partilhada.
+
+    Args:
+        grid (list): Matriz bidimensional inicial.
+        generations (int): Número de gerações a simular.
+        workers (int): Número de processos paralelos a criar.
+
+    Returns:
+        list: Nova matriz bidimensional final reconstruída a partir da memória partilhada.
+    """
     if not grid or not grid[0]: return grid
 
     rows, cols = len(grid), len(grid[0])
