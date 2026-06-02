@@ -1,15 +1,37 @@
-import socket
+"""
+Módulo Cliente RPC
+Fornece uma interface de consola (CLI) interativa para envio de parâmetros e
+baterias de benchmark contra o servidor RPC.
+"""
+
 import json
-import time
 import random
+import socket
+import time
+from typing import Any, Dict, Optional
 
 
 class RPCClient:
-    def __init__(self, host='localhost', port=5000):
+    """
+    Classe para instanciar a comunicação e envios JSON ao Servidor.
+    """
+
+    def __init__(self, host: str = 'localhost', port: int = 5000):
         self.host = host
         self.port = port
 
-    def call(self, method: str, params: dict):
+    def call(self, method: str, params: Dict[str, Any]) -> Optional[Any]:
+        """
+        Gera a framework de rede, conecta-se, transmite o pedido estruturado
+        e aguarda descodificando a resposta.
+
+        Args:
+            method (str): A string equivalente à função no servidor.
+            params (Dict): Dicionário de argumentos da função.
+
+        Returns:
+            O valor devolvido pela função do servidor, ou None em caso de erro.
+        """
         request = {
             "method": method,
             "params": params
@@ -38,7 +60,8 @@ class RPCClient:
             return None
 
 
-def main():
+def main() -> None:
+    """Menu principal executado de forma cíclica."""
     client = RPCClient()
 
     while True:
@@ -165,9 +188,9 @@ def main():
         elif escolha == '5':
             print("\n--- Teste Game of Life Visual ---")
             print("A abrir a janela grafica... (Pode continuar a usar o menu de texto!)")
+            import os
             import subprocess
             import sys
-            import os
 
             ambiente = os.environ.copy()
             ambiente["PYGAME_HIDE_SUPPORT_PROMPT"] = "hide"
